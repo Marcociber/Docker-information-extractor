@@ -1,11 +1,37 @@
 #!/bin/bash
 set -e  # Detener script si hay error
+
+# ==============================================
+# VERIFICACIÓN DE PERMISOS - DEBE EJECUTARSE CON SUDO
+# ==============================================
+if [ "$EUID" -ne 0 ]; then 
+    echo "============================================"
+    echo "¡ERROR: Este script debe ejecutarse con sudo!"
+    echo "============================================"
+    echo ""
+    echo "Por favor, ejecuta el script con:"
+    echo "  sudo $0"
+    echo ""
+    echo "Razón: Necesita permisos de superusuario para:"
+    echo "  • Gestionar contenedores Docker"
+    echo "  • Configurar redes Docker"
+    echo "  • Modificar archivos del sistema"
+    echo ""
+    echo "Si ya eres root, usa simplemente:"
+    echo "  $0"
+    echo ""
+    exit 1
+fi
+
 echo "============================================"
 echo "=== Configuración de Contenedores Docker ==="
 echo "============================================"
+echo ""
+echo "Ejecutando con permisos de superusuario ✓"
+echo ""
 
 # 1. Detectar contenedores existentes
-echo -e "\nDetectando contenedores Docker existentes..."
+echo "Detectando contenedores Docker existentes..."
 CONTAINERS=($(docker ps --format "{{.Names}}" 2>/dev/null))
 
 if [ ${#CONTAINERS[@]} -eq 0 ]; then
