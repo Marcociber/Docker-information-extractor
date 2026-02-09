@@ -1,5 +1,6 @@
 #!/bin/bash
 # nmap_vuln_scanner.sh - Escaneo con scripts de vulnerabilidad
+# Versión: 2.0 - Con gestión automática de carpetas y limpieza
 
 # ========================================================
 # VERIFICACIÓN DE USUARIO ROOT
@@ -19,15 +20,78 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-SCANS_DIR="nmap_scans"
-mkdir -p "$SCANS_DIR"
+# ========================================================
+# CONFIGURACIÓN DE DIRECTORIOS
+# ========================================================
+# Crear carpeta principal de escaneos
+BASE_SCANS_DIR="nmap_scans"
+mkdir -p "$BASE_SCANS_DIR"
+
+# Crear carpeta específica con fecha y hora
+CURRENT_DATE=$(date '+%Y%m%d_%H%M%S')
+SCANS_DIR="$BASE_SCANS_DIR/nmap_scan_${CURRENT_DATE}"
+
+# Crear estructura de carpetas
+mkdir -p "$SCANS_DIR/logs"
+mkdir -p "$SCANS_DIR/results"
+mkdir -p "$SCANS_DIR/raw"
 
 echo "========================================================"
 echo "ESCANEO NMAP DE VULNERABILIDADES PARA CONTENEDORES DOCKER"
 echo "========================================================"
 echo "COMANDO: nmap -A -T4 -p- -sV -sC --script vuln"
+echo "DIRECTORIO: $SCANS_DIR"
 echo "========================================================"
 
+# ========================================================
+# FUNCIÓN DE LIMPIEZA AUTOMÁTICA (48 HORAS)
+# ========================================================
+setup_auto_cleanup() {
+    local scan_dir="$1"
+    local cleanup_script="/tmp/cleanup_scan_${CURRENT_DATE}.sh"
+    
+    # Crear script de limpieza
+    cat > "$cleanup_script" << EOF
+#!/bin/bash
+# Script de limpieza automática - Se ejecutará en 48 horas
+SCAN_DIR="$scan_dir"
+DELETE_TIME=\$(date -d "48 hours ago" +%s)
+DIR_TIME=\$(stat -c %Y "\$SCAN_DIR" 2>/dev/null)
+
+if [ -d "\$SCAN_DIR" ] && [ "\$DIR_TIME" -lt "\$DELETE_TIME" ]; then
+    echo "[AUTO-CLEANUP] Eliminando carpeta antigua: \$SCAN_DIR"
+    rm -rf "\$SCAN_DIR"
+    echo "[AUTO-CLEANUP] Carpeta eliminada: \$(basename \$SCAN_DIR)"
+fi
+
+# Auto-eliminar este script después de ejecutar
+rm -f "$cleanup_script"
+EOF
+    
+    chmod +x "$cleanup_script"
+    
+    # Programar limpieza con at (48 horas)
+    if command -v at &>/dev/null; then
+        echo "bash $cleanup_script" | at now + 48 hours 2>/dev/null
+        echo "[INFO] Limpieza programada para 48 horas después"
+    # Alternativa con cron si at no está disponible
+    elif command -v crontab &>/dev/null; then
+        CRON_JOB="@reboot sleep 172800 && bash $cleanup_script"
+        (crontab -l 2>/dev/null | grep -v "$cleanup_script"; echo "$CRON_JOB") | crontab -
+        echo "[INFO] Limpieza programada vía cron para 48 horas después"
+    else
+        echo "[ADVERTENCIA] No se pudo programar limpieza automática"
+        echo "              Elimine manualmente en 48 horas:"
+        echo "              rm -rf $scan_dir"
+    fi
+}
+
+# Configurar limpieza automática
+setup_auto_cleanup "$SCANS_DIR"
+
+# ========================================================
+# VERIFICACIONES DEL SISTEMA
+# ========================================================
 # Verificar Docker
 if ! docker ps &>/dev/null; then
     echo "Error: Docker no está corriendo o sin permisos"
@@ -47,52 +111,92 @@ if [ ! -d "/usr/share/nmap/scripts/" ]; then
     apt install -y nmap-scripts
 fi
 
+# ========================================================
+# ARCHIVOS DE REGISTRO Y RESULTADOS
+# ========================================================
+# Archivos de salida
+JSON_FILE="$SCANS_DIR/results/nmap_results.json"
+TXT_FILE="$SCANS_DIR/results/nmap_results.txt"
+LOG_FILE="$SCANS_DIR/logs/scan_execution.log"
+SUMMARY_FILE="$SCANS_DIR/results/executive_summary.txt"
+
+# Iniciar archivo de log
+{
+echo "========================================================"
+echo "LOG DE EJECUCIÓN - NMAP VULNERABILITY SCAN"
+echo "Fecha: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "Directorio: $SCANS_DIR"
+echo "Hostname: $(hostname)"
+echo "Usuario: $(whoami)"
+echo "========================================================"
+} > "$LOG_FILE"
+
+# ========================================================
+# DETECCIÓN DE CONTENEDORES
+# ========================================================
+echo ""
+echo "Buscando contenedores Docker..."
+echo "Buscando contenedores Docker..." >> "$LOG_FILE"
+
 # Obtener contenedores corriendo
 CONTAINERS=$(docker ps --format "{{.Names}}")
 
 if [ -z "$CONTAINERS" ]; then
-    echo "No hay contenedores corriendo"
+    echo "No hay contenedores corriendo" | tee -a "$LOG_FILE"
     exit 1
 fi
 
+echo "Contenedores encontrados: $CONTAINERS" >> "$LOG_FILE"
+
 echo ""
 echo "Contenedores encontrados:"
+{
+echo "========================================================"
+echo "CONTENEDORES DETECTADOS"
+echo "========================================================"
+} > "$SUMMARY_FILE"
+
 for CONTAINER in $CONTAINERS; do
     IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CONTAINER" 2>/dev/null)
     IMAGE=$(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null)
     echo "  - $CONTAINER: $IP ($IMAGE)"
+    echo "  - $CONTAINER: $IP ($IMAGE)" >> "$SUMMARY_FILE"
 done
-echo ""
 
-# Archivos de salida
-JSON_FILE="$SCANS_DIR/nmap_results.json"
-TXT_FILE="$SCANS_DIR/nmap_results.txt"
+echo "" >> "$SUMMARY_FILE"
 
+# ========================================================
+# PREPARAR ARCHIVOS DE RESULTADOS
+# ========================================================
 # Crear JSON
 echo "{" > "$JSON_FILE"
 echo '  "scan_type": "vulnerability_assessment",' >> "$JSON_FILE"
 echo '  "command": "nmap -A -T4 -p- -sV -sC --script vuln",' >> "$JSON_FILE"
 echo '  "timestamp": "'$(date -Iseconds)'",' >> "$JSON_FILE"
+echo '  "scan_directory": "'$SCANS_DIR'",' >> "$JSON_FILE"
 echo '  "host": "'$(hostname)'",' >> "$JSON_FILE"
 echo '  "docker_version": "'$(docker --version 2>/dev/null | cut -d, -f1)'",' >> "$JSON_FILE"
 echo '  "nmap_version": "'$(nmap --version 2>/dev/null | head -n1)'",' >> "$JSON_FILE"
 echo '  "scans": {' >> "$JSON_FILE"
 
 # Crear TXT
-echo "========================================================" > "$TXT_FILE"
-echo "ESCANEO DE VULNERABILIDADES NMAP" >> "$TXT_FILE"
-echo "========================================================" >> "$TXT_FILE"
-echo "" >> "$TXT_FILE"
-echo "FECHA: $(date '+%Y-%m-%d %H:%M:%S')" >> "$TXT_FILE"
-echo "HOST: $(hostname)" >> "$TXT_FILE"
-echo "COMANDO: nmap -A -T4 -p- -sV -sC --script vuln" >> "$TXT_FILE"
-echo "DOCKER: $(docker --version 2>/dev/null | cut -d, -f1)" >> "$TXT_FILE"
-echo "NMAP: $(nmap --version 2>/dev/null | head -n1)" >> "$TXT_FILE"
-echo "" >> "$TXT_FILE"
-echo "========================================================" >> "$TXT_FILE"
-echo "RESUMEN EJECUTIVO" >> "$TXT_FILE"
-echo "========================================================" >> "$TXT_FILE"
-echo "" >> "$TXT_FILE"
+{
+echo "========================================================"
+echo "ESCANEO DE VULNERABILIDADES NMAP"
+echo "========================================================"
+echo ""
+echo "FECHA: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "DIRECTORIO: $SCANS_DIR"
+echo "HOST: $(hostname)"
+echo "COMANDO: nmap -A -T4 -p- -sV -sC --script vuln"
+echo "DOCKER: $(docker --version 2>/dev/null | cut -d, -f1)"
+echo "NMAP: $(nmap --version 2>/dev/null | head -n1)"
+echo ""
+echo "========================================================"
+echo "RESUMEN EJECUTIVO"
+echo "========================================================"
+echo ""
+} > "$TXT_FILE"
 
 # Variables para estadísticas
 FIRST=true
@@ -100,6 +204,13 @@ TOTAL_CONTAINERS=0
 SUCCESS_SCANS=0
 TOTAL_VULNS=0
 TOTAL_OPEN_PORTS=0
+
+# ========================================================
+# ESCANEO DE CONTENEDORES
+# ========================================================
+echo "" >> "$LOG_FILE"
+echo "INICIANDO ESCANEOS INDIVIDUALES" >> "$LOG_FILE"
+echo "========================================================" >> "$LOG_FILE"
 
 # Procesar cada contenedor
 for CONTAINER in $CONTAINERS; do
@@ -110,6 +221,7 @@ for CONTAINER in $CONTAINERS; do
     
     if [ -z "$IP" ] || [ "$IP" = "<no value>" ]; then
         echo "  $CONTAINER: Sin IP válida, saltando..."
+        echo "[$(date '+%H:%M:%S')] $CONTAINER: Sin IP válida, saltando..." >> "$LOG_FILE"
         echo "" >> "$TXT_FILE"
         echo "CONTENEDOR: $CONTAINER" >> "$TXT_FILE"
         echo "ERROR: Sin IP válida" >> "$TXT_FILE"
@@ -126,6 +238,8 @@ for CONTAINER in $CONTAINERS; do
     echo "IP: $IP"
     echo "Imagen: $IMAGE"
     echo "========================================================"
+    
+    echo "[$(date '+%H:%M:%S')] Iniciando escaneo: $CONTAINER ($IP)" >> "$LOG_FILE"
     
     # Separador JSON
     if [ "$FIRST" = true ]; then
@@ -152,9 +266,17 @@ for CONTAINER in $CONTAINERS; do
     
     START_TIME=$(date +%s)
     
+    # Archivo para salida cruda
+    RAW_OUTPUT_FILE="$SCANS_DIR/raw/${CONTAINER}_scan_$(date '+%H%M%S').txt"
+    
     # Ejecutar nmap con timeout extendido (20 minutos)
+    echo "[$(date '+%H:%M:%S')] Ejecutando nmap en $IP..." >> "$LOG_FILE"
     NMAP_OUTPUT=$(timeout 1200 nmap -A -T4 -p- -sV -sC --script vuln "$IP" 2>&1)
     RETURN_CODE=$?
+    
+    # Guardar salida cruda
+    echo "$NMAP_OUTPUT" > "$RAW_OUTPUT_FILE"
+    echo "[$(date '+%H:%M:%S')] Salida cruda guardada en: $(basename $RAW_OUTPUT_FILE)" >> "$LOG_FILE"
     
     END_TIME=$(date +%s)
     SCAN_TIME=$((END_TIME - START_TIME))
@@ -175,12 +297,15 @@ for CONTAINER in $CONTAINERS; do
         SUCCESS_SCANS=$((SUCCESS_SCANS + 1))
         STATUS="COMPLETADO"
         echo "Escaneo completado en ${MINUTES}m ${SECONDS}s"
+        echo "[$(date '+%H:%M:%S')] $CONTAINER: Escaneo completado (${MINUTES}m ${SECONDS}s)" >> "$LOG_FILE"
     elif [ $RETURN_CODE -eq 124 ]; then
         STATUS="TIMEOUT"
         echo "Timeout después de 20 minutos"
+        echo "[$(date '+%H:%M:%S')] $CONTAINER: Timeout después de 20 minutos" >> "$LOG_FILE"
     else
         STATUS="ERROR"
         echo "Error en escaneo (código: $RETURN_CODE)"
+        echo "[$(date '+%H:%M:%S')] $CONTAINER: Error (código: $RETURN_CODE)" >> "$LOG_FILE"
     fi
     
     # Mostrar resumen
@@ -199,6 +324,7 @@ for CONTAINER in $CONTAINERS; do
     echo '      "scan_time_seconds": '$SCAN_TIME',' >> "$JSON_FILE"
     echo '      "scan_time_human": "'${MINUTES}m ${SECONDS}s'",' >> "$JSON_FILE"
     echo '      "return_code": '$RETURN_CODE',' >> "$JSON_FILE"
+    echo '      "raw_output_file": "'$(basename $RAW_OUTPUT_FILE)'",' >> "$JSON_FILE"
     echo '      "host_status": "'$(echo $HOST_STATUS | sed 's/"/\\"/g')'",' >> "$JSON_FILE"
     echo '      "open_ports_count": '$OPEN_PORTS',' >> "$JSON_FILE"
     echo '      "vulnerabilities_count": '$VULNERABILITIES',' >> "$JSON_FILE"
@@ -253,6 +379,7 @@ for CONTAINER in $CONTAINERS; do
     echo "ESTADO: $STATUS" >> "$TXT_FILE"
     echo "TIEMPO: ${MINUTES}m ${SECONDS}s" >> "$TXT_FILE"
     echo "CODIGO SALIDA: $RETURN_CODE" >> "$TXT_FILE"
+    echo "ARCHIVO CRUDO: $(basename $RAW_OUTPUT_FILE)" >> "$TXT_FILE"
     echo "" >> "$TXT_FILE"
     
     echo "RESULTADOS:" >> "$TXT_FILE"
@@ -309,25 +436,31 @@ for CONTAINER in $CONTAINERS; do
     # Pequeña pausa entre escaneos
     if [ $TOTAL_CONTAINERS -lt $(echo "$CONTAINERS" | wc -w) ]; then
         echo "Esperando 10 segundos antes del proximo escaneo..."
+        echo "[$(date '+%H:%M:%S')] Pausa de 10 segundos..." >> "$LOG_FILE"
         sleep 10
     fi
 done
 
+# ========================================================
+# FINALIZACIÓN Y ESTADÍSTICAS
+# ========================================================
 # Cerrar JSON
 echo '  }' >> "$JSON_FILE"
 echo '}' >> "$JSON_FILE"
 
 # Finalizar TXT con estadísticas
-echo "" >> "$TXT_FILE"
-echo "========================================================" >> "$TXT_FILE"
-echo "ESTADISTICAS GLOBALES" >> "$TXT_FILE"
-echo "========================================================" >> "$TXT_FILE"
-echo "" >> "$TXT_FILE"
-echo "Contenedores totales: $TOTAL_CONTAINERS" >> "$TXT_FILE"
-echo "Escaneos exitosos: $SUCCESS_SCANS" >> "$TXT_FILE"
-echo "Puertos abiertos totales: $TOTAL_OPEN_PORTS" >> "$TXT_FILE"
-echo "Vulnerabilidades encontradas: $TOTAL_VULNS" >> "$TXT_FILE"
-echo "" >> "$TXT_FILE"
+{
+echo ""
+echo "========================================================"
+echo "ESTADISTICAS GLOBALES"
+echo "========================================================"
+echo ""
+echo "Contenedores totales: $TOTAL_CONTAINERS"
+echo "Escaneos exitosos: $SUCCESS_SCANS"
+echo "Puertos abiertos totales: $TOTAL_OPEN_PORTS"
+echo "Vulnerabilidades encontradas: $TOTAL_VULNS"
+echo ""
+} >> "$TXT_FILE"
 
 if [ $TOTAL_VULNS -gt 0 ]; then
     echo "  ADVERTENCIA: Se encontraron $TOTAL_VULNS vulnerabilidades" >> "$TXT_FILE"
@@ -342,19 +475,121 @@ echo "Duracion total: ~$((TOTAL_CONTAINERS * 15)) minutos estimados" >> "$TXT_FI
 echo "Archivos guardados en: $SCANS_DIR/" >> "$TXT_FILE"
 echo "========================================================" >> "$TXT_FILE"
 
+# Crear archivo de metadatos
+METADATA_FILE="$SCANS_DIR/scan_metadata.txt"
+{
+echo "========================================================"
+echo "METADATOS DEL ESCANEO"
+echo "========================================================"
+echo "Fecha creación: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "Directorio: $SCANS_DIR"
+echo "Fecha expiración: $(date -d "48 hours" '+%Y-%m-%d %H:%M:%S')"
+echo "Estado: COMPLETADO"
+echo "Contenedores escaneados: $SUCCESS_SCANS/$TOTAL_CONTAINERS"
+echo "Vulnerabilidades encontradas: $TOTAL_VULNS"
+echo "========================================================"
+echo ""
+echo "ESTRUCTURA DEL DIRECTORIO:"
+echo "├── logs/               - Archivos de registro de ejecución"
+echo "│   └── scan_execution.log"
+echo "├── results/            - Resultados procesados"
+echo "│   ├── nmap_results.json"
+echo "│   ├── nmap_results.txt"
+echo "│   └── executive_summary.txt"
+echo "├── raw/               - Salidas crudas de nmap por contenedor"
+echo "└── scan_metadata.txt  - Este archivo"
+echo ""
+echo "ARCHIVOS PRINCIPALES:"
+echo "• executive_summary.txt  - Resumen ejecutivo"
+echo "• nmap_results.json     - Resultados en formato JSON"
+echo "• nmap_results.txt      - Resultados detallados en texto"
+echo ""
+echo "COMANDOS ÚTILES:"
+echo "• Ver vulnerabilidades: grep -i 'vulnerable' $SCANS_DIR/results/nmap_results.txt"
+echo "• Ver resumen: cat $SCANS_DIR/results/executive_summary.txt"
+echo "• Ver logs: cat $SCANS_DIR/logs/scan_execution.log"
+echo ""
+echo "NOTA: Esta carpeta se eliminará automáticamente el:"
+echo "      $(date -d "48 hours" '+%A, %d de %B de %Y a las %H:%M:%S')"
+} > "$METADATA_FILE"
+
+# Actualizar resumen ejecutivo
+{
+echo "========================================================"
+echo "RESUMEN EJECUTIVO"
+echo "========================================================"
+echo "Fecha escaneo: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "Carpeta resultados: $SCANS_DIR"
+echo ""
+echo "ESTADÍSTICAS:"
+echo "• Total contenedores: $TOTAL_CONTAINERS"
+echo "• Escaneos exitosos: $SUCCESS_SCANS"
+echo "• Puertos abiertos: $TOTAL_OPEN_PORTS"
+echo "• Vulnerabilidades: $TOTAL_VULNS"
+echo ""
+} > "$SUMMARY_FILE"
+
+if [ $TOTAL_VULNS -gt 0 ]; then
+    echo "¡ADVERTENCIA DE SEGURIDAD!" >> "$SUMMARY_FILE"
+    echo "Se encontraron $TOTAL_VULNS vulnerabilidades potenciales." >> "$SUMMARY_FILE"
+    echo "Revise los resultados detallados inmediatamente." >> "$SUMMARY_FILE"
+else
+    echo "No se detectaron vulnerabilidades en los escaneos." >> "$SUMMARY_FILE"
+fi
+
+{
+echo ""
+echo "ARCHIVOS GENERADOS:"
+echo "• $SCANS_DIR/results/nmap_results.json"
+echo "• $SCANS_DIR/results/nmap_results.txt"
+echo "• $SCANS_DIR/logs/scan_execution.log"
+echo ""
+echo "El escaneo se completó correctamente."
+echo "Esta carpeta será eliminada automáticamente en 48 horas."
+} >> "$SUMMARY_FILE"
+
+# Finalizar log
+{
+echo ""
+echo "========================================================"
+echo "ESCANEO COMPLETADO"
+echo "Fecha: $(date '+%Y-%m-%d %H:%M:%S')"
+echo "========================================================"
+echo "Total contenedores procesados: $TOTAL_CONTAINERS"
+echo "Escaneos exitosos: $SUCCESS_SCANS"
+echo "Tiempo total estimado: ~$((TOTAL_CONTAINERS * 15)) minutos"
+echo "Vulnerabilidades detectadas: $TOTAL_VULNS"
+echo ""
+echo "Resultados guardados en: $SCANS_DIR"
+echo "========================================================"
+} >> "$LOG_FILE"
+
 echo ""
 echo "========================================================"
 echo "ESCANEOS COMPLETADOS"
 echo "========================================================"
-echo "Estadisticas:"
+echo "Estadísticas:"
 echo "  • Contenedores escaneados: $SUCCESS_SCANS/$TOTAL_CONTAINERS"
 echo "  • Puertos abiertos encontrados: $TOTAL_OPEN_PORTS"
 echo "  • Vulnerabilidades detectadas: $TOTAL_VULNS"
 echo ""
 echo "Resultados guardados en:"
-echo "  $JSON_FILE"
-echo "  $TXT_FILE"
+echo "  📁 $SCANS_DIR/"
+echo "  ├── 📄 results/nmap_results.json"
+echo "  ├── 📄 results/nmap_results.txt"
+echo "  ├── 📄 results/executive_summary.txt"
+echo "  ├── 📄 logs/scan_execution.log"
+echo "  ├── 📄 scan_metadata.txt"
+echo "  └── 📂 raw/ (salidas crudas por contenedor)"
+echo ""
+echo "Limpieza automática programada para 48 horas."
 echo ""
 echo "Para ver vulnerabilidades:"
-echo "  grep -i 'vulnerable' $TXT_FILE"
+echo "  grep -i 'vulnerable' $SCANS_DIR/results/nmap_results.txt"
 echo "========================================================"
+
+# Mostrar mensaje de expiración
+echo ""
+echo "⚠️  NOTA: Esta carpeta será eliminada automáticamente el:"
+echo "    $(date -d "48 hours" '+%A, %d de %B de %Y a las %H:%M:%S')"
+echo ""
