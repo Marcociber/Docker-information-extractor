@@ -1,0 +1,108 @@
+services:
+  ubuntu-target:
+    image: ubuntu:latest
+    container_name: tfm_ubuntu
+    hostname: ubuntu-target
+    tty: true
+    stdin_open: true
+    # Instalar herramientas + nmap + servicios en Ubuntu/Debian + SAMBA
+    command: /bin/bash -c "
+      apt-get update && 
+      DEBIAN_FRONTEND=noninteractive apt-get install -y 
+        iproute2 net-tools iputils-ping procps psmisc 
+        lsof cron sudo nano nmap apache2 openssh-server 
+        samba samba-common-bin &&
+      service ssh start && 
+      apache2ctl start &&
+      mkdir -p /srv/samba/compartido &&
+      chmod 777 /srv/samba/compartido &&
+      echo '[global]' > /etc/samba/smb.conf &&
+      echo '   server min protocol = SMB2_10' >> /etc/samba/smb.conf &&
+      echo '   client min protocol = SMB2_10' >> /etc/samba/smb.conf &&
+      echo '[Compartido]' >> /etc/samba/smb.conf &&
+      echo '   path = /srv/samba/compartido' >> /etc/samba/smb.conf &&
+      echo '   browseable = yes' >> /etc/samba/smb.conf &&
+      echo '   read only = no' >> /etc/samba/smb.conf &&
+      echo '   guest ok = yes' >> /etc/samba/smb.conf &&
+      service smbd start &&
+      echo 'root:password' | chpasswd &&
+      sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+      service ssh restart &&
+      sleep infinity"
+    
+    networks:
+      lab-network:
+        ipv4_address: 172.30.0.10
+    
+    ports:
+      - "8080:80"      # Apache
+      - "2222:22"      # SSH
+      - "445:445/tcp"  # SMB (IMPORTANTE: exponer puerto 445)
+    
+    # Agregar capacidad para escaneo de red
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_ADMIN  # Necesario para Samba
+
+  debian-target:
+    image: debian:latest
+    container_name: tfm_debian
+    hostname: debian-target
+    tty: true
+    stdin_open: true
+    # Instalar herramientas + nmap + servicios en Debian
+    command: /bin/bash -c "
+      apt-get update && 
+      DEBIAN_FRONTEND=noninteractive apt-get install -y 
+        iproute2 net-tools iputils-ping procps psmisc 
+        lsof cron sudo nano nmap apache2 openssh-server &&
+      service ssh start && 
+      apache2ctl start &&
+      echo 'root:password' | chpasswd &&
+      sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+      service ssh restart &&
+      sleep infinity"
+    
+    networks:
+      lab-network:
+        ipv4_address: 172.30.0.20
+    
+    ports:
+      - "8081:80"  # Exponer Apache (puerto diferente para evitar conflicto)
+      - "2223:22"  # Exponer SSH (puerto diferente para evitar conflicto)
+    
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+  fedora-target:
+    image: fedora:latest
+    container_name: tfm_fedora
+    hostname: fedora-target
+    tty: true
+    stdin_open: true
+    # Instalar herramientas + nmap en Fedora
+    command: /bin/bash -c "
+      dnf update -y && 
+      dnf install -y 
+        iproute net-tools iputils procps-ng psmisc 
+        lsof cronie sudo nano nmap hostname bind-utils &&
+      echo 'password' | passwd root --stdin &&
+      sleep infinity"
+    
+    networks:
+      lab-network:
+        ipv4_address: 172.30.0.30
+    
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+
+networks:
+  lab-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
