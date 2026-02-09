@@ -37,13 +37,12 @@ services:
     ports:
       - "8080:80"      # Apache
       - "2222:22"      # SSH
-      - "445:445/tcp"  # SMB (IMPORTANTE: exponer puerto 445)
+      - "445:445/tcp"  # SMB 
     
-    # Agregar capacidad para escaneo de red
     cap_add:
       - NET_RAW
       - NET_ADMIN
-      - SYS_ADMIN  # Necesario para Samba
+      - SYS_ADMIN  
 
   debian-target:
     image: debian:latest
@@ -105,4 +104,5 @@ networks:
     ipam:
       config:
         - subnet: 172.30.0.0/24
+
           gateway: 172.30.0.1
