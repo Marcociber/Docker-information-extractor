@@ -1,6 +1,7 @@
 #!/bin/bash
 # nmap_vuln_scanner.sh - Escaneo con scripts de vulnerabilidad
-# Versión: 2.0 - Con gestión automática de carpetas y limpieza
+# Versión: 2.1 - Con gestión automática de carpetas y limpieza
+#              - Asegura directorio único por ejecución (incluso mismo segundo)
 
 # ========================================================
 # VERIFICACIÓN DE USUARIO ROOT
@@ -27,9 +28,19 @@ fi
 BASE_SCANS_DIR="nmap_scans"
 mkdir -p "$BASE_SCANS_DIR"
 
-# Crear carpeta específica con fecha y hora
+# ------------------------------------------------------------------
+# GENERAR NOMBRE DE DIRECTORIO ÚNICO (incluso en el mismo segundo)
+# ------------------------------------------------------------------
 CURRENT_DATE=$(date '+%Y%m%d_%H%M%S')
-SCANS_DIR="$BASE_SCANS_DIR/nmap_scan_${CURRENT_DATE}"
+BASE_SCAN_NAME="nmap_scan_${CURRENT_DATE}"
+SCANS_DIR="${BASE_SCANS_DIR}/${BASE_SCAN_NAME}"
+
+# Si el directorio ya existe, añadir sufijo _1, _2, ...
+COUNTER=1
+while [ -d "$SCANS_DIR" ]; do
+    SCANS_DIR="${BASE_SCANS_DIR}/${BASE_SCAN_NAME}_${COUNTER}"
+    COUNTER=$((COUNTER + 1))
+done
 
 # Crear estructura de carpetas
 mkdir -p "$SCANS_DIR/logs"
@@ -48,7 +59,9 @@ echo "========================================================"
 # ========================================================
 setup_auto_cleanup() {
     local scan_dir="$1"
-    local cleanup_script="/tmp/cleanup_scan_${CURRENT_DATE}.sh"
+    local folder_name=$(basename "$scan_dir")
+    # Nombre único para el script de limpieza basado en el directorio final
+    local cleanup_script="/tmp/cleanup_${folder_name}.sh"
     
     # Crear script de limpieza
     cat > "$cleanup_script" << EOF
