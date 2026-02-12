@@ -15,11 +15,18 @@ class SecurityInfoExtractor:
         self.client = docker.from_env()
         self.containers = self.detect_containers()
         
-        # Crear carpeta con formato info_results_{dia}_{hora}
+        # ------------------------------------------------------------
+        # Generar nombre de carpeta ÚNICO (con sufijo si es necesario)
+        # ------------------------------------------------------------
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.results_dir = f'info_results_{timestamp}'
-        os.makedirs(self.results_dir, exist_ok=True)
+        base_dir = f'info_results_{timestamp}'
+        self.results_dir = base_dir
+        counter = 1
+        while os.path.exists(self.results_dir):
+            self.results_dir = f"{base_dir}_{counter}"
+            counter += 1
         
+        os.makedirs(self.results_dir, exist_ok=False)  # No debería existir ya
         print(f"Resultados se guardarán en: {self.results_dir}")
         
         # Iniciar limpieza automática en segundo plano
@@ -41,7 +48,7 @@ class SecurityInfoExtractor:
         cleanup_thread.start()
     
     def cleanup_old_results(self):
-        """Elimina carpetas de resultados con más de 48 horas"""
+        """Elimina carpetas de resultados con más de 48 horas (soporta sufijos _1, _2, ...)"""
         try:
             now = datetime.now()
             max_age = timedelta(hours=48)
@@ -53,17 +60,20 @@ class SecurityInfoExtractor:
                     folder_path = os.path.join(current_dir, item)
                     
                     try:
-                        # Extraer fecha del nombre de carpeta
-                        # Formato: info_results_YYYYMMDD_HHMMSS
-                        date_str = item.replace('info_results_', '')
+                        # Extraer la parte de fecha/hora del nombre
+                        # formato: info_results_YYYYMMDD_HHMMSS[_sufijo]
+                        # Cogemos el trozo después del prefijo y antes del primer '_' extra (si hay)
+                        rest = item.replace('info_results_', '', 1)
+                        # El timestamp es siempre los primeros 15 caracteres: YYYYMMDD_HHMMSS
+                        date_str = rest[:15]  # 8 fecha + 1 '_' + 6 hora = 15
                         folder_date = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
                         folder_age = now - folder_date
                         
                         if folder_age > max_age:
                             print(f"Eliminando carpeta antigua: {item} ({folder_age.days}d {folder_age.seconds//3600}h)")
                             shutil.rmtree(folder_path)
-                    except ValueError:
-                        # Si no tiene formato de fecha correcto, ignorar
+                    except (ValueError, IndexError):
+                        # Si no tiene el formato esperado, ignorar
                         continue
         except Exception as e:
             print(f"Error al limpiar carpetas antiguas: {e}")
