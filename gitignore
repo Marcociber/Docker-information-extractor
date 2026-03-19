@@ -1,0 +1,50 @@
+# Directorios de resultados generados por los scripts
+info_results_*/
+nmap_scans/
+nmap_scans_*/
+
+# Archivos de configuración locales
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Archivos de entorno virtual de Python
+venv/
+env/
+ENV/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Archivos de configuración de IDE
+.vscode/
+.idea/
+*.sublime-*
+.project
+.classpath
+
+# Archivos de Docker específicos
+docker-compose.override.yml
+.docker/
+*.dockerenv
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+*.orig
+*.backup
+
+# Credenciales y secretos (si llegaran a existir)
+*.key
+*.pem
+*.crt
+*.env
+secrets/
