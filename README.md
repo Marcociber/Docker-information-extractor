@@ -40,7 +40,7 @@
 
 ```bash
 # Clonar el repositorio
-git clone <tu-repositorio>
+git clone https://github.com/Marcociber/Docker-information-extractor
 cd <directorio-del-proyecto>
 
 # Dar permisos de ejecución a los scripts
